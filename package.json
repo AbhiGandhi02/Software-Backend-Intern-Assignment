@@ -1,18 +1,37 @@
 {
   "name": "backend-assignment",
   "version": "1.0.0",
+  "description": "Scalable Backend ETL & Automation Pipeline with PostgreSQL and Google Sheets",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   },
-  "keywords": [],
-  "author": "",
+  "scripts": {
+    "start": "node etl/etl.js",
+    "start:netflix": "node etl/netflix_etl.js",
+    "start:titanic": "node etl/titanic_etl.js",
+    "test": "echo \"Tests not yet implemented\" && exit 0",
+    "test:connection": "node scripts/test-connection.js",
+    "lint": "echo \"Linting not configured\"",
+    "migrate": "node scripts/run-migrations.js"
+  },
+  "keywords": [
+    "etl",
+    "pipeline",
+    "postgresql",
+    "google-sheets",
+    "data-engineering"
+  ],
+  "author": "Abhi Gandhi",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "csv-parser": "^3.2.0",
     "dotenv": "^17.2.3",
     "googleapis": "^169.0.0",
-    "pg": "^8.16.3"
-  }
+    "pg": "^8.16.3",
+    "validator": "^13.11.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {}
 }

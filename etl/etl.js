@@ -1,141 +1,258 @@
 require('dotenv').config();
 const fs = require('fs');
 const csv = require('csv-parser');
-const { google } = require('googleapis');
-const { Client } = require('pg');
+const config = require('../config/config');
+const logger = require('../utils/logger');
+const { initializePool, executeTransaction, closePool } = require('../utils/db');
+const { initializeSheetsClient, readSheetData, batchUpdateSheet } = require('../utils/sheets');
+const { validateStudentRow } = require('../utils/validators');
+const { readCache, writeCache } = require('../utils/cache');
+const { generateQualityReport } = require('../utils/quality');
 
-// CONFIGURATION
-const SOURCE_TYPE = 'SHEET'; 
-const GOOGLE_SHEET_ID = '1rJ7dfMnqkFJL5i0njsYVEPFCvlCiwKmofZHw2d9tq9k'; 
-const CSV_FILE_PATH = 'students.csv';
-const JSON_FILE_PATH = 'students.json';
-const RANGE = 'Sheet1!A2:J'; 
+/**
+ * Extract data from configured source (Sheet, CSV, or JSON)
+ */
+async function extractData() {
+    logger.info(`Extracting data from source: ${config.etl.sourceType}...`);
 
-const db = new Client({ connectionString: process.env.DATABASE_URL });
+    // Check cache first
+    const cacheKey = `${config.etl.sourceType}_${config.googleSheets.spreadsheetId || config.etl.csvPath.students}`;
+    const cachedData = readCache(cacheKey);
 
-async function extractData(sheetsClient) {
-    console.log(`Extracting data from source: ${SOURCE_TYPE}...`);
-    
-    if (SOURCE_TYPE === 'SHEET') {
-        const res = await sheetsClient.spreadsheets.values.get({
-            spreadsheetId: GOOGLE_SHEET_ID,
-            range: RANGE,
-        });
-        return res.data.values;
+    if (cachedData) {
+        logger.info('Using cached data');
+        return cachedData;
     }
 
-    // JSON Handler
-    if (SOURCE_TYPE === 'JSON') {
-        const rawData = fs.readFileSync(JSON_FILE_PATH);
-        return JSON.parse(rawData).map(obj => [
-            obj['Timestamp'], obj['Student Name'], obj['Email Address'], obj['Phone Number'],
-            obj['Department'], obj['Course Name'], obj['Credits'], obj['Grade'], obj['Year Of Study'], "Pending Sync"
+    let rows = [];
+
+    if (config.etl.sourceType === 'SHEET') {
+        rows = await readSheetData();
+    } else if (config.etl.sourceType === 'JSON') {
+        const rawData = fs.readFileSync(config.etl.jsonPath.students, 'utf8');
+        const jsonData = JSON.parse(rawData);
+        rows = jsonData.map(obj => [
+            obj['Timestamp'],
+            obj['Student Name'],
+            obj['Email Address'],
+            obj['Phone Number'],
+            obj['Department'],
+            obj['Course Name'],
+            obj['Credits'],
+            obj['Grade'],
+            obj['Year Of Study'],
+            "Pending Sync"
         ]);
-    }
-
-    // CSV Handler
-    if (SOURCE_TYPE === 'CSV') {
-        const results = [];
-        return new Promise((resolve, reject) => {
-            fs.createReadStream(CSV_FILE_PATH)
+    } else if (config.etl.sourceType === 'CSV') {
+        rows = await new Promise((resolve, reject) => {
+            const results = [];
+            fs.createReadStream(config.etl.csvPath.students)
                 .pipe(csv())
                 .on('data', (data) => {
                     results.push([
-                        data['Timestamp'], data['Student Name'], data['Email Address'], data['Phone Number'],
-                        data['Department'], data['Course Name'], data['Credits'], data['Grade'], data['Year Of Study'], "Pending Sync"
+                        data['Timestamp'],
+                        data['Student Name'],
+                        data['Email Address'],
+                        data['Phone Number'],
+                        data['Department'],
+                        data['Course Name'],
+                        data['Credits'],
+                        data['Grade'],
+                        data['Year Of Study'],
+                        "Pending Sync"
                     ]);
                 })
                 .on('end', () => resolve(results))
                 .on('error', (err) => reject(err));
         });
     }
+
+    // Cache the extracted data
+    writeCache(cacheKey, rows);
+
+    return rows;
 }
 
-async function runETL() {
-    console.log("Starting Automation Pipeline...");
-    
-    try {
-        await db.connect();
-        
-        const auth = new google.auth.GoogleAuth({
-            keyFile: 'service-account.json',
-            scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-        });
-        const sheets = google.sheets({ version: 'v4', auth });
+/**
+ * Transform and validate row data
+ */
+function transformRow(row, rowIndex) {
+    const validation = validateStudentRow(row);
 
-        // 1. EXTRACT
-        const rows = await extractData(sheets);
-        
+    if (!validation.valid) {
+        logger.warn(`Row ${rowIndex} validation failed: ${validation.errors.join(', ')}`);
+        throw new Error(validation.errors.join('; '));
+    }
+
+    return validation.data;
+}
+
+/**
+ * Load data into database using transaction
+ */
+async function loadData(transformedRows, client) {
+    let successCount = 0;
+
+    for (const rowData of transformedRows) {
+        try {
+            await client.query(
+                `CALL register_student($1, $2, $3, $4)`,
+                [rowData.firstName, rowData.lastName, rowData.email, rowData.course]
+            );
+            successCount++;
+        } catch (err) {
+            logger.error(`Failed to insert student ${rowData.email}:`, err.message);
+            throw err; // Will trigger transaction rollback
+        }
+    }
+
+    return successCount;
+}
+
+/**
+ * Main ETL Pipeline
+ */
+async function runETL() {
+    logger.info("=== Starting ETL Automation Pipeline ===");
+    logger.info(`Environment: ${config.env}`);
+    logger.info(`Source: ${config.etl.sourceType}`);
+
+    try {
+        // Initialize connections
+        await initializePool();
+
+        if (config.etl.sourceType === 'SHEET') {
+            await initializeSheetsClient();
+        }
+
+        // EXTRACT
+        const rows = await extractData();
+
         if (!rows || rows.length === 0) {
-            console.log('No data found.');
+            logger.info('No data found to process.');
             return;
         }
 
-        let processedCount = 0;
+        logger.info(`Extracted ${rows.length} rows`);
 
-        // 2. TRANSFORM & LOAD
+        // Prepare batch updates for Google Sheets
+        const sheetUpdates = [];
+        const transformedRows = [];
+        let processedCount = 0;
+        let errorCount = 0;
+
+        // TRANSFORM
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
-            const rowIndex = i + 2; 
-            const status = row[9];  
+            const rowIndex = i + 2; // Sheet row number (accounting for header)
+            const status = row[9];
 
-            // FILTER: Strict check for plain text "Pending Sync"
-            if (SOURCE_TYPE === 'SHEET' && status !== 'Pending Sync') continue;
+            // Filter: Only process "Pending Sync" rows for Sheet source
+            if (config.etl.sourceType === 'SHEET' && status !== 'Pending Sync') {
+                continue;
+            }
 
-            console.log(`Processing Row ${rowIndex}: ${row[1]}...`);
+            logger.debug(`Processing Row ${rowIndex}: ${row[1]}`);
 
             try {
-                const nameParts = (row[1] || '').split(' ');
-                const firstName = nameParts[0];
-                const lastName = nameParts.slice(1).join(' ') || 'Unknown';
-                const email = (row[2] || '').trim();
-                const course = row[5] || 'General';
+                const transformedData = transformRow(row, rowIndex);
+                transformedData.rowIndex = rowIndex;
+                transformedRows.push(transformedData);
 
-                if (!email.includes('@')) throw new Error("Invalid Email");
-
-                // DB INSERT
-                await db.query(`CALL register_student($1, $2, $3, $4)`, 
-                    [firstName, lastName, email, course]);
-
-                // WRITE BACK: "Synced" (Plain text)
-                if (SOURCE_TYPE === 'SHEET') {
-                    await sheets.spreadsheets.values.update({
-                        spreadsheetId: GOOGLE_SHEET_ID,
-                        range: `Sheet1!J${rowIndex}`,
-                        valueInputOption: 'RAW',
-                        resource: { values: [['Synced']] }
-                    });
-                }
-                
                 processedCount++;
-                console.log(`   Success`);
-
             } catch (err) {
-                console.error(`   Failed:`, err.message);
-                
-                // WRITE BACK: Error
-                if (SOURCE_TYPE === 'SHEET') {
-                    await sheets.spreadsheets.values.update({
-                        spreadsheetId: GOOGLE_SHEET_ID,
+                errorCount++;
+                logger.error(`Row ${rowIndex} transformation failed: ${err.message}`);
+
+                // Add error update for Google Sheets
+                if (config.etl.sourceType === 'SHEET') {
+                    sheetUpdates.push({
                         range: `Sheet1!J${rowIndex}`,
-                        valueInputOption: 'RAW',
-                        resource: { values: [[`Error: ${err.message}`]] }
+                        values: [[`Error: ${err.message.substring(0, 100)}`]]
                     });
                 }
             }
         }
 
-        if (processedCount === 0) {
-            console.log("No 'Pending Sync' rows found.");
-        } else {
-            console.log(`Processed ${processedCount} rows!`);
+        if (transformedRows.length === 0) {
+            logger.info("No valid rows to process.");
+
+            // Update error statuses if any
+            if (sheetUpdates.length > 0 && config.etl.sourceType === 'SHEET') {
+                await batchUpdateSheet(sheetUpdates);
+            }
+
+            return;
         }
 
+        logger.info(`Validated ${transformedRows.length} rows, ${errorCount} errors`);
+
+        // LOAD - Use transaction for data integrity
+        const loadedCount = await executeTransaction(async (client) => {
+            return await loadData(transformedRows, client);
+        });
+
+        logger.info(`Successfully loaded ${loadedCount} students to database`);
+
+        // Update Google Sheets with success status (batch update)
+        if (config.etl.sourceType === 'SHEET') {
+            for (const rowData of transformedRows) {
+                sheetUpdates.push({
+                    range: `Sheet1!J${rowData.rowIndex}`,
+                    values: [['Synced']]
+                });
+            }
+
+            if (sheetUpdates.length > 0) {
+                await batchUpdateSheet(sheetUpdates);
+                logger.info(`Updated ${sheetUpdates.length} status cells in Google Sheets`);
+            }
+        }
+
+        // DATA QUALITY CHECKS
+        logger.info("Running data quality checks...");
+        const qualityReport = await generateQualityReport('students', {
+            uniqueColumn: 'email',
+            requiredColumns: ['first_name', 'last_name', 'email'],
+            validations: [
+                { column: 'email', type: 'email' },
+                { column: 'enrollment_year', type: 'numeric', min: 1, max: 5 }
+            ]
+        });
+
+        if (!qualityReport.passed) {
+            logger.warn('Data quality checks found issues:', qualityReport);
+        } else {
+            logger.info('All data quality checks passed');
+        }
+
+        // Summary
+        logger.info("=== ETL Pipeline Completed Successfully ===");
+        logger.info(`Total rows extracted: ${rows.length}`);
+        logger.info(`Rows processed: ${processedCount}`);
+        logger.info(`Rows loaded: ${loadedCount}`);
+        logger.info(`Errors: ${errorCount}`);
+
     } catch (err) {
-        console.error("Pipeline Error:", err);
+        logger.error("=== Pipeline Error ===", err);
+        throw err;
     } finally {
-        await db.end();
+        await closePool();
+        logger.info("Database connections closed");
     }
 }
 
-runETL();
+// Run the pipeline
+if (require.main === module) {
+    runETL()
+        .then(() => {
+            logger.info("Pipeline execution finished");
+            process.exit(0);
+        })
+        .catch((err) => {
+            logger.error("Pipeline execution failed:", err);
+            process.exit(1);
+        });
+}
+
+module.exports = { runETL };
