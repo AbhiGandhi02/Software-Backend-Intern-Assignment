@@ -1,0 +1,13 @@
+[
+  {
+    "Timestamp": "2023-02-01 09:00:00",
+    "Student Name": "JSON User",
+    "Email Address": "json.user@university.edu",
+    "Phone Number": "555-9999",
+    "Department": "Physics",
+    "Course Name": "Astrophysics",
+    "Credits": 4,
+    "Grade": "A",
+    "Year Of Study": 2
+  }
+]
