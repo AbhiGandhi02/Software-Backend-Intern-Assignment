@@ -1,5 +1,4 @@
 -- View: Student Transcripts
--- Combines Student, Course, and Grade info into one clean table
 CREATE OR REPLACE VIEW student_transcripts AS
 SELECT 
     s.student_id,

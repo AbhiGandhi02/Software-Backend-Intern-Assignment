@@ -7,7 +7,7 @@ const CSV_FILE = 'titanic.csv';
 const db = new Client({ connectionString: process.env.DATABASE_URL });
 
 async function loadTitanic() {
-    console.log("🚢 Starting Titanic ETL...");
+    console.log("Starting Titanic ETL...");
     
     try {
         await db.connect();
@@ -16,30 +16,25 @@ async function loadTitanic() {
         // 1. Extract (Read CSV) & Force Lowercase Headers
         await new Promise((resolve, reject) => {
             fs.createReadStream(CSV_FILE)
-                // mapHeaders: h => h.toLowerCase() ensures we can use row.passengerid safely
                 .pipe(csv({ mapHeaders: ({ header }) => header.toLowerCase().trim() })) 
                 .on('data', (row) => rows.push(row))
                 .on('end', resolve)
                 .on('error', reject);
         });
 
-        console.log(`📥 Extracted ${rows.length} rows.`);
+        console.log(`Extracted ${rows.length} rows.`);
         
-        // Debug: Print the first row to see if keys are correct now
         if (rows.length > 0) {
-            console.log("🔍 Sample Row Data:", rows[0]);
+            console.log("Sample Row Data:", rows[0]);
         }
 
         let successCount = 0;
         
         // 2. Load (Insert into DB)
         for (const row of rows) {
-            // Note: We use all lowercase keys now (passengerid, name, etc.)
             const passengerId = parseInt(row.passengerid);
 
             if (isNaN(passengerId)) {
-                // If this prints, we still have a mapping issue
-                // console.log("Skipping invalid ID:", row); 
                 continue; 
             }
 
@@ -62,10 +57,10 @@ async function loadTitanic() {
             successCount++;
         }
 
-        console.log(`✅ Titanic Data Loaded Successfully! (${successCount} passengers inserted)`);
+        console.log(`Titanic Data Loaded Successfully! (${successCount} passengers inserted)`);
 
     } catch (err) {
-        console.error("❌ Fatal Error:", err);
+        console.error("Fatal Error:", err);
     } finally {
         await db.end();
     }

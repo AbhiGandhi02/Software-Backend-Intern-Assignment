@@ -1,4 +1,3 @@
--- schema.sql
 -- 1. Clean up existing tables (for development only)
 DROP TABLE IF EXISTS enrollments;
 DROP TABLE IF EXISTS courses;

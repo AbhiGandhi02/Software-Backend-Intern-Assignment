@@ -80,8 +80,8 @@ async function runETL() {
         // 2. TRANSFORM & LOAD
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
-            const rowIndex = i + 2; // 0-index + 1 (header) + 1 (sheet row starts at 1)
-            const status = row[9];  // Column J is Index 9
+            const rowIndex = i + 2; 
+            const status = row[9];  
 
             // FILTER: Only process "Pending Sync" rows (for Sheet mode)
             if (SOURCE_TYPE === 'SHEET' && status !== '⏳ Pending Sync') continue;
@@ -105,7 +105,7 @@ async function runETL() {
                 await db.query(`CALL register_student($1, $2, $3, $4)`, 
                     [firstName, lastName, email, course]);
 
-                // WRITE BACK: Update Sheet Status (Only if using Sheets)
+                // WRITE BACK: Update Sheet Status 
                 if (SOURCE_TYPE === 'SHEET') {
                     await sheets.spreadsheets.values.update({
                         spreadsheetId: GOOGLE_SHEET_ID,

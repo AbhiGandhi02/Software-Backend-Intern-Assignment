@@ -1,5 +1,4 @@
 -- 1. Aggregation: Count of Students per Department
--- Shows which departments are busiest
 SELECT d.department_name, COUNT(s.student_id) as total_students
 FROM departments d
 LEFT JOIN courses c ON d.department_id = c.department_id
@@ -9,7 +8,6 @@ GROUP BY d.department_name
 ORDER BY total_students DESC;
 
 -- 2. Complex Join: Average Grade Points per Course
--- Converts letter grades (A, B) to numbers (4.0, 3.0) for calculation
 SELECT 
     c.course_name,
     COUNT(e.student_id) as enrolled_count,

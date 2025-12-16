@@ -1,4 +1,3 @@
--- seed.sql
 -- Insert Departments
 INSERT INTO departments (department_name, department_code) VALUES 
 ('Computer Science', 'CS'),

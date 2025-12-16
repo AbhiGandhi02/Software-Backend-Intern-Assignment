@@ -10,7 +10,7 @@ async function testConnection() {
     await client.connect();
     console.log("Success: Connected to PostgreSQL/NeonDB!");
     
-    // Optional: Run a quick query to prove it
+    // Run a quick query to prove it
     const res = await client.query('SELECT NOW()');
     console.log("Database Time:", res.rows[0].now);
     
